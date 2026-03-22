@@ -7,17 +7,23 @@ def masked_fgsm_attack(data, model, model_type, mask, epsilon=0.1, device="cpu")
     data_copy.requires_grad = True
     mask = mask.to(device)
 
-    outputs = model(data_copy)
-
     if model_type == "AUTOENCODER":
+        outputs = model(data_copy)
         criterion = nn.MSELoss()
         loss = criterion(outputs, data_copy)
+        
+    elif model_type == "F_ANOGAN":
+        # Fast-AnoGAN calculates its own full anomaly score
+        loss = model.get_anomaly_score(data_copy).mean()
+        
     elif model_type == "DISCRIMINATOR":
+        outputs = model(data_copy)
         criterion = nn.BCELoss()
         target_labels = torch.ones_like(outputs).to(device)
         loss = criterion(outputs, target_labels)
+        
     else:
-        raise ValueError("Target model must be AUTOENCODER or DISCRIMINATOR")
+        raise ValueError("Target model must be AUTOENCODER, DISCRIMINATOR, or F_ANOGAN")
 
     model.zero_grad()
     loss.backward()

@@ -34,7 +34,7 @@ def print_extraction_table(orig_sample, adv_sample, scaler, feature_cols, mask_s
     print(f"Total Features Mutated: {mutated_count} / {int(mask_sum)} allowed continuous features.")
 
 def plot_feature_sensitivity(autoencoder, sample_batch, feature_cols, criterion_mse, dataset_name):
-    """Plots top 20 gradients driving the Autoencoder's anomaly score with dataset-specific filename."""
+    """Plots top 20 gradients driving the Autoencoder's anomaly score."""
     sample_to_explain = sample_batch[0:1].clone().detach().requires_grad_(True)
     
     autoencoder.zero_grad()
@@ -68,21 +68,21 @@ def plot_feature_sensitivity(autoencoder, sample_batch, feature_cols, criterion_
     print(f"-> Saved '{filename}'")
     plt.close()
 
-def plot_unified_comparison(ae_base, anogan_base, ae_adv, anogan_adv, dataset_name):
-    """Plots baseline vs adversarial scores for both architectures with dataset-specific filename."""
-    models = ['Deep Autoencoder', 'AnoGAN']
-    baseline_scores = [ae_base, anogan_base]
-    adv_scores = [ae_adv, anogan_adv]
+def plot_unified_comparison(ae_base, anogan_base, fano_base, ae_adv, anogan_adv, fano_adv, dataset_name):
+    """Plots baseline vs adversarial scores for all THREE architectures."""
+    models = ['Deep Autoencoder', 'Standard AnoGAN', 'Fast-AnoGAN']
+    baseline_scores = [ae_base, anogan_base, fano_base]
+    adv_scores = [ae_adv, anogan_adv, fano_adv]
 
     x = np.arange(len(models))
     width = 0.35
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(10, 6))
     rects1 = ax.bar(x - width/2, baseline_scores, width, label='Original Malware', color='#ff4c4c', edgecolor='black')
-    rects2 = ax.bar(x + width/2, adv_scores, width, label='Adversarial Malware (Evaded)', color='#3182bd', edgecolor='black')
+    rects2 = ax.bar(x + width/2, adv_scores, width, label='Adversarial Malware', color='#3182bd', edgecolor='black')
 
     ax.set_ylabel('Anomaly Score (Loss)', fontsize=14, labelpad=10)
-    ax.set_title(f'Evasion Success ({dataset_name}): Autoencoder vs. AnoGAN', fontsize=16, fontweight='bold', pad=15)
+    ax.set_title(f'Evasion Success ({dataset_name}): Model Robustness Comparison', fontsize=16, fontweight='bold', pad=15)
     ax.set_xticks(x)
     ax.set_xticklabels(models, fontsize=14)
     ax.legend(fontsize=12)
@@ -92,10 +92,39 @@ def plot_unified_comparison(ae_base, anogan_base, ae_adv, anogan_adv, dataset_na
         for rect in rects:
             height = rect.get_height()
             ax.annotate(f'{height:.4f}', xy=(rect.get_x() + rect.get_width() / 2, height),
-                        xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontweight='bold')
+                        xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontweight='bold', fontsize=10)
 
     fig.tight_layout()
     filename = f'unified_evasion_comparison_{dataset_name.lower()}.pdf'
+    plt.savefig(filename, format='pdf', bbox_inches='tight')
+    print(f"-> Saved '{filename}'")
+    plt.close()
+
+def plot_inference_latency(ae_time, ano_time, fano_time, dataset_name):
+    """Plots a log-scale comparison of model inference times."""
+    models = ['Autoencoder\n(O(1) Pass)', 'Fast-AnoGAN\n(O(1) Pass)', 'Standard AnoGAN\n(O(N) Opt.)']
+    # Convert seconds to milliseconds
+    times_ms = [ae_time * 1000, fano_time * 1000, ano_time * 1000]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    
+    # Colors highlighting speed vs slowness
+    colors = ['#2ca02c', '#1f77b4', '#d62728'] 
+    bars = ax.bar(models, times_ms, color=colors, edgecolor='black', width=0.5)
+
+    ax.set_ylabel('Inference Time (ms) - Log Scale', fontsize=14, labelpad=10)
+    ax.set_yscale('log')
+    ax.set_title(f'Inference Latency Comparison ({dataset_name})', fontsize=16, fontweight='bold', pad=15)
+    ax.grid(axis='y', linestyle='--', alpha=0.7, which='both')
+
+    # Add text labels on top of bars
+    for bar in bars:
+        height = bar.get_height()
+        ax.annotate(f'{height:.4f} ms', xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 5), textcoords="offset points", ha='center', va='bottom', fontweight='bold', fontsize=12)
+
+    fig.tight_layout()
+    filename = f'inference_latency_{dataset_name.lower()}.pdf'
     plt.savefig(filename, format='pdf', bbox_inches='tight')
     print(f"-> Saved '{filename}'")
     plt.close()

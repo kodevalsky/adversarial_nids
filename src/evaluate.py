@@ -7,7 +7,9 @@ from gan import Discriminator, Generator
 from preprocess_data import DatasetPreprocessor
 from attack import masked_fgsm_attack
 from anogan import StaticAnoGAN, anogan_evaluate
-from visualize import plot_feature_sensitivity, plot_unified_comparison
+from visualize import plot_feature_sensitivity, plot_unified_comparison, plot_inference_latency
+from f_anogan import Encoder, F_AnoGAN
+import time
 
 def get_feature_columns(preprocessor):
     """Returns list of features for the dataset after preprocessing, excluding the label."""
@@ -25,6 +27,37 @@ def create_mask(feature_cols, dataset_type):
     else:
         mask = [0.0 if any(x in c for x in ['Flag', 'Binary', 'Id']) else 1.0 for c in feature_cols]
     return torch.tensor(mask, dtype=torch.float32)
+
+def measure_inference_speed(ae, gen, disc, f_anogan_model, data_batch, device):
+    """Measures the average time required to calculate the anomaly score for a single sample."""
+    print("\n⏱️ Measuring Inference Latency...")
+    
+    test_batch = data_batch[:100].clone().detach().to(device)
+    num_samples = len(test_batch)
+
+    start_time = time.perf_counter()
+    with torch.no_grad():
+        _ = ae(test_batch)
+    ae_time_per_sample = (time.perf_counter() - start_time) / num_samples
+
+    start_time = time.perf_counter()
+    with torch.no_grad():
+        _ = f_anogan_model.get_anomaly_score(test_batch)
+    fano_time_per_sample = (time.perf_counter() - start_time) / num_samples
+
+    start_time = time.perf_counter()
+    _, _ = anogan_evaluate(gen, disc, test_batch, device)
+    ano_time_per_sample = (time.perf_counter() - start_time) / num_samples
+
+    print("-" * 45)
+    print(f"{'Model':<15} | {'Time per Sample (ms)':<20}")
+    print("-" * 45)
+    print(f"{'Autoencoder':<15} | {ae_time_per_sample * 1000:>10.4f} ms")
+    print(f"{'Fast-AnoGAN':<15} | {fano_time_per_sample * 1000:>10.4f} ms")
+    print(f"{'Standard AnoGAN':<15} | {ano_time_per_sample * 1000:>10.4f} ms")
+    print("-" * 45)
+
+    return ae_time_per_sample, fano_time_per_sample, ano_time_per_sample
 
 def run_evaluation(config, device):
     """Main eval function"""
@@ -55,6 +88,13 @@ def run_evaluation(config, device):
     disc.load_state_dict(torch.load(config['disc_path'], map_location=device))
     disc.eval()
 
+    encoder = Encoder(input_dim).to(device)
+    encoder.load_state_dict(torch.load(config['fano_encoder'], map_location=device))
+    encoder.eval()
+
+    f_anogan_model = F_AnoGAN(generator=gen, encoder=encoder, discriminator=disc).to(device)
+    f_anogan_model.eval()
+
     # Autoencoder Testing
     with torch.no_grad():
         ae_base = criterion_mse(ae(attack_batch), attack_batch).mean().item()
@@ -74,14 +114,33 @@ def run_evaluation(config, device):
     adv_anogan_scores, _ = anogan_evaluate(gen, disc, adv_anogan, device)
     anogan_adv = adv_anogan_scores.mean().item()
 
+    # Fast-AnoGAN Testing
+    with torch.no_grad():
+        fano_base_scores = f_anogan_model(attack_batch)
+        fano_base = fano_base_scores.mean().item()
+
+    adv_f_anogan = masked_fgsm_attack(attack_batch, f_anogan_model, "F_ANOGAN", fgsm_mask, epsilon=0.05, device=device)
+
+    with torch.no_grad():
+        fano_adv_scores = f_anogan_model(adv_f_anogan)
+        fano_adv = fano_adv_scores.mean().item()
+
+    ae_time, fano_time, anogan_time = measure_inference_speed(ae, gen, disc, f_anogan_model, attack_batch, device)
+
     # Visualizations
     plot_feature_sensitivity(ae, attack_batch, feature_cols, criterion_mse, name)
-    plot_unified_comparison(ae_base, anogan_base, ae_adv, anogan_adv, name)
+    
+    # Pass all 6 scores!
+    plot_unified_comparison(ae_base, anogan_base, fano_base, ae_adv, anogan_adv, fano_adv, name)
+    
+    # Plot the latency!
+    plot_inference_latency(ae_time, anogan_time, fano_time, name)
 
     return {
         "Dataset": name,
-        "AE_Base": ae_base, "AE_Adv": ae_adv, "AE_Evasion": (1 - ae_adv/ae_base)*100,
-        "AG_Base": anogan_base, "AG_Adv": anogan_adv, "AG_Evasion": (1 - anogan_adv/anogan_base)*100
+        "AE_Base": ae_base, "AE_Adv": ae_adv, "AE_Evasion": (1 - ae_adv/ae_base)*100, "AE_inf_time": ae_time,
+        "AG_Base": anogan_base, "AG_Adv": anogan_adv, "AG_Evasion": (1 - anogan_adv/anogan_base)*100, "AG_inf_time": anogan_time,
+        "FA_Base": fano_base, "FA_Adv": fano_adv, "FA_Evasion": (1 - fano_adv/fano_base)*100, "FA_inf_time": fano_time
     }
 
 def main():
@@ -91,16 +150,18 @@ def main():
         {
             'name': 'UNSW',
             'path': './src/datasets/unsw',
-            'ae_path': 'best_autoencoder.pth',
-            'gen_path': 'generator_final.pth',
-            'disc_path': 'discriminator_final.pth'
+            'ae_path': './models/best_autoencoder_unsw.pth',
+            'gen_path': './models/generator_final_unsw.pth',
+            'disc_path': './models/discriminator_final_unsw.pth',
+            'fano_encoder': './models/encoder_final_unsw.pth',
         },
         {
             'name': 'CIC',
             'path': './src/datasets/cic',
-            'ae_path': 'best_autoencoder_cic.pth',
-            'gen_path': 'generator_final_cic.pth',
-            'disc_path': 'discriminator_final_cic.pth'
+            'ae_path': './models/best_autoencoder_cic.pth',
+            'gen_path': './models/generator_final_cic.pth',
+            'disc_path': './models/discriminator_final_cic.pth',
+            'fano_encoder': './models/encoder_final_cic.pth'
         }
     ]
 
@@ -114,12 +175,12 @@ def main():
 
     # Summary Table
     print(f"\n{'#'*30}\n      FINAL ATTACK SUMMARY\n{'#'*30}")
-    print(f"{'Dataset':<10} | {'Model':<12} | {'Base Score':<10} | {'Adv Score':<10} | {'Evasion %'}")
+    print(f"{'Dataset':<10} | {'Model':<12} | {'Base Score':<10} | {'Adv Score':<10} | {'Evasion %'} | {'Inf Time':<10}")
     print("-" * 65)
     for s in summary_stats:
-        print(f"{s['Dataset']:<10} | {'Autoencoder':<12} | {s['AE_Base']:<10.4f} | {s['AE_Adv']:<10.4f} | {s['AE_Evasion']:>8.2f}%")
-        print(f"{'':<10} | {'AnoGAN':<12} | {s['AG_Base']:<10.4f} | {s['AG_Adv']:<10.4f} | {s['AG_Evasion']:>8.2f}%")
-        print("-" * 65)
+        print(f"{s['Dataset']:<10} | {'Autoencoder':<12} | {s['AE_Base']:<10.4f} | {s['AE_Adv']:<10.4f} | {s['AE_Evasion']:>8.2f}% | {s['AE_inf_time']* 1000:<10.4f} ms")
+        print(f"{'':<10} | {'AnoGAN':<12} | {s['AG_Base']:<10.4f} | {s['AG_Adv']:<10.4f} | {s['AG_Evasion']:>8.2f}% | {s['AG_inf_time']* 1000:<10.4f} ms")
+        print(f"{'':<10} | {'Fast-AnoGAN':<12} | {s['FA_Base']:<10.4f} | {s['FA_Adv']:<10.4f} | {s['FA_Evasion']:>8.2f}% | {s['FA_inf_time']* 1000:<10.4f} ms")
 
 if __name__ == '__main__':
     main()
