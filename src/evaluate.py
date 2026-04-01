@@ -59,6 +59,13 @@ def measure_inference_speed(ae, gen, disc, f_anogan_model, data_batch, device):
 
     return ae_time_per_sample, fano_time_per_sample, ano_time_per_sample
 
+def calculate_asr_from_scores(benign_scores, adv_scores):
+    """Calculates Attack Success Rate strictly from pre-calculated score arrays."""
+    threshold = torch.quantile(benign_scores, 0.95).item()
+    successful_evasions = (adv_scores <= threshold).sum().item()
+    asr = (successful_evasions / len(adv_scores)) * 100
+    return asr, threshold
+
 def run_evaluation(config, device):
     """Main eval function"""
     name = config['name']
@@ -74,6 +81,9 @@ def run_evaluation(config, device):
     malicious_indices = (test_labels == 1).nonzero(as_tuple=True)[0]
     attack_batch = test_tensor[malicious_indices][:1000].to(device)
     criterion_mse = nn.MSELoss(reduction='none')
+
+    benign_indices = (test_labels == 0).nonzero(as_tuple=True)[0]
+    benign_batch = test_tensor[benign_indices][:1000].to(device)
 
     # Load Models
     ae = Autoencoder(input_dim).to(device)
@@ -102,7 +112,11 @@ def run_evaluation(config, device):
     adv_ae = masked_fgsm_attack(attack_batch, ae, "AUTOENCODER", fgsm_mask, epsilon=0.05, device=device)
     
     with torch.no_grad():
-        ae_adv = criterion_mse(ae(adv_ae), adv_ae).mean().item()
+        adv_ae_scores = criterion_mse(ae(adv_ae), adv_ae).mean(dim=1)
+        ae_adv = adv_ae_scores.mean().item()
+        benign_ae_scores = criterion_mse(ae(benign_batch), benign_batch).mean(dim=1)
+
+    ae_asr, ae_threshold = calculate_asr_from_scores(benign_ae_scores, adv_ae_scores)
 
     # AnoGAN Testing
     base_anogan_scores, optimized_z = anogan_evaluate(gen, disc, attack_batch, device)
@@ -114,6 +128,10 @@ def run_evaluation(config, device):
     adv_anogan_scores, _ = anogan_evaluate(gen, disc, adv_anogan, device)
     anogan_adv = adv_anogan_scores.mean().item()
 
+    benign_ano_scores, _ = anogan_evaluate(gen, disc, benign_batch, device)
+
+    anogan_asr, anogan_threshold = calculate_asr_from_scores(benign_ano_scores, adv_anogan_scores)
+    
     # Fast-AnoGAN Testing
     with torch.no_grad():
         fano_base_scores = f_anogan_model(attack_batch)
@@ -122,8 +140,11 @@ def run_evaluation(config, device):
     adv_f_anogan = masked_fgsm_attack(attack_batch, f_anogan_model, "F_ANOGAN", fgsm_mask, epsilon=0.05, device=device)
 
     with torch.no_grad():
-        fano_adv_scores = f_anogan_model(adv_f_anogan)
+        fano_adv_scores = f_anogan_model.get_anomaly_score(adv_f_anogan)
         fano_adv = fano_adv_scores.mean().item()
+        benign_fa_scores = f_anogan_model.get_anomaly_score(benign_batch)
+        
+    fano_asr, fano_threshold = calculate_asr_from_scores(benign_fa_scores, fano_adv_scores)
 
     ae_time, fano_time, anogan_time = measure_inference_speed(ae, gen, disc, f_anogan_model, attack_batch, device)
 
@@ -138,9 +159,9 @@ def run_evaluation(config, device):
 
     return {
         "Dataset": name,
-        "AE_Base": ae_base, "AE_Adv": ae_adv, "AE_Evasion": (1 - ae_adv/ae_base)*100, "AE_inf_time": ae_time,
-        "AG_Base": anogan_base, "AG_Adv": anogan_adv, "AG_Evasion": (1 - anogan_adv/anogan_base)*100, "AG_inf_time": anogan_time,
-        "FA_Base": fano_base, "FA_Adv": fano_adv, "FA_Evasion": (1 - fano_adv/fano_base)*100, "FA_inf_time": fano_time
+        "AE_Base": ae_base, "AE_Adv": ae_adv, "AE_Evasion": (1 - ae_adv/ae_base)*100, "AE_inf_time": ae_time, "AE_ASR": ae_asr, "AE_threshold": ae_threshold,
+        "AG_Base": anogan_base, "AG_Adv": anogan_adv, "AG_Evasion": (1 - anogan_adv/anogan_base)*100, "AG_inf_time": anogan_time, "AG_ASR": anogan_asr, "AG_threshold": anogan_threshold,
+        "FA_Base": fano_base, "FA_Adv": fano_adv, "FA_Evasion": (1 - fano_adv/fano_base)*100, "FA_inf_time": fano_time, "FA_ASR": fano_asr, "FA_threshold": fano_threshold,         
     }
 
 def main():
@@ -174,13 +195,13 @@ def main():
             print(f"Skipping {conf['name']}: {e}")
 
     # Summary Table
-    print(f"\n{'#'*30}\n      FINAL ATTACK SUMMARY\n{'#'*30}")
-    print(f"{'Dataset':<10} | {'Model':<12} | {'Base Score':<10} | {'Adv Score':<10} | {'Evasion %'} | {'Inf Time':<10}")
-    print("-" * 65)
+    print(f"\n{'#'*40}\n           FINAL ATTACK SUMMARY\n{'#'*40}")
+    print(f"{'Dataset':<10} | {'Model':<12} | {'Base Score':<10} | {'Adv Score':<10} | {'Evasion %':<10} | {'ASR %':<8} | {'Inf Time'}")
+    print("-" * 90)
     for s in summary_stats:
-        print(f"{s['Dataset']:<10} | {'Autoencoder':<12} | {s['AE_Base']:<10.4f} | {s['AE_Adv']:<10.4f} | {s['AE_Evasion']:>8.2f}% | {s['AE_inf_time']* 1000:<10.4f} ms")
-        print(f"{'':<10} | {'AnoGAN':<12} | {s['AG_Base']:<10.4f} | {s['AG_Adv']:<10.4f} | {s['AG_Evasion']:>8.2f}% | {s['AG_inf_time']* 1000:<10.4f} ms")
-        print(f"{'':<10} | {'Fast-AnoGAN':<12} | {s['FA_Base']:<10.4f} | {s['FA_Adv']:<10.4f} | {s['FA_Evasion']:>8.2f}% | {s['FA_inf_time']* 1000:<10.4f} ms")
-
+        print(f"{s['Dataset']:<10} | {'Autoencoder':<12} | {s['AE_Base']:<10.4f} | {s['AE_Adv']:<10.4f} | {s['AE_Evasion']:>8.2f}% | {s['AE_ASR']:>6.2f}% | {s['AE_inf_time']*1000:<8.4f} ms")
+        print(f"{'':<10} | {'AnoGAN':<12} | {s['AG_Base']:<10.4f} | {s['AG_Adv']:<10.4f} | {s['AG_Evasion']:>8.2f}% | {s['AG_ASR']:>6.2f}% | {s['AG_inf_time']*1000:<8.4f} ms")
+        print(f"{'':<10} | {'Fast-AnoGAN':<12} | {s['FA_Base']:<10.4f} | {s['FA_Adv']:<10.4f} | {s['FA_Evasion']:>8.2f}% | {s['FA_ASR']:>6.2f}% | {s['FA_inf_time']*1000:<8.4f} ms")
+    print("-" * 90)
 if __name__ == '__main__':
     main()
