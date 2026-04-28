@@ -3,7 +3,9 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 import torch_directml
 from preprocess_data import DatasetPreprocessor
+from utils import set_deterministic_seed
 from gan import Generator
+import os
 
 class Encoder(nn.Module):
     """Maps the input data space directly to the latent space z."""
@@ -37,14 +39,14 @@ class F_AnoGAN(nn.Module):
         z = self.encoder(x)
         gen_x = self.generator(z)
         
-        # 1. Residual Loss
+        # Residual Loss
         residual_loss = self.criterion_mse(gen_x, x).mean(dim=1)
         
-        # 2. Discrimination Loss
+        # Discrimination Loss
         d_out = self.discriminator(gen_x).squeeze()
         discrimination_loss = torch.abs(1.0 - d_out)
         
-        # 3. Total Anomaly Score
+        # Anomaly Score
         return (1 - self.lambda_weight) * residual_loss + self.lambda_weight * discrimination_loss
 
 def train_f_anogan_encoder(encoder, generator, loader, device, ds_name, epochs=15):
@@ -52,7 +54,6 @@ def train_f_anogan_encoder(encoder, generator, loader, device, ds_name, epochs=1
     criterion_mse = nn.MSELoss()
     optimizer = torch.optim.Adam(encoder.parameters(), lr=1e-3)
     
-    # CRITICAL: Freeze the Generator. We only train the Encoder!
     generator.eval() 
     for param in generator.parameters():
         param.requires_grad = False
@@ -79,38 +80,33 @@ def train_f_anogan_encoder(encoder, generator, loader, device, ds_name, epochs=1
         if (epoch + 1) % 5 == 0:
             print(f"Epoch [{epoch+1}/{epochs}] | Reconstruction Loss: {total_loss/len(loader):.6f}")
 
-    # Save the trained Encoder
     save_path = f"encoder_final_{ds_name.lower()}.pth"
     torch.save(encoder.state_dict(), save_path)
     print(f"-> Saved {save_path}")
 
 if __name__ == '__main__':
-    # Initialize GPU
     device = torch_directml.device()
-    print(f"Executing f-AnoGAN training on device: {device}")
-
+    SEEDS = [42, 123, 2026]
     configs = [
-        {"name": "UNSW", "path": "./src/datasets/unsw", "gen_path": "./models/generator_final_unsw.pth"},
-        {"name": "CIC", "path": "./src/datasets/cic", "gen_path": "./models/generator_final_cic.pth"}
+        {"name": "UNSW", "path": "./src/datasets/unsw"},
+        {"name": "CIC", "path": "./src/datasets/cic"}
     ]
 
-    for conf in configs:
-        try:
-            # 1. Load Data
+    for seed in SEEDS:
+        set_deterministic_seed(seed)
+        print(f"\n{'='*40}\n STARTING F-ANOGAN ENCODER TRAINING | SEED: {seed}\n{'='*40}")
+        
+        for conf in configs:
             prep = DatasetPreprocessor(conf['path'], conf['name'])
             train_t, _, _, _ = prep.get_tensors()
             loader = DataLoader(TensorDataset(train_t), batch_size=2048, shuffle=True)
             input_dim = train_t.shape[1]
 
-            # 2. Load Existing Frozen Generator
+            gen_path = f"./models/generator_final_{conf['name'].lower()}_seed{seed}.pth"
             gen = Generator(64, input_dim).to(device)
-            gen.load_state_dict(torch.load(conf['gen_path'], map_location=device))
+            gen.load_state_dict(torch.load(gen_path, map_location=device))
             
-            # 3. Initialize New Encoder
             enc = Encoder(input_dim, latent_dim=64).to(device)
-            
-            # 4. Train and Save Encoder
             train_f_anogan_encoder(enc, gen, loader, device, conf['name'])
             
-        except FileNotFoundError as e:
-            print(f"Skipping {conf['name']}: {e}")
+            os.rename(f"encoder_final_{conf['name'].lower()}.pth", f"./models/encoder_final_{conf['name'].lower()}_seed{seed}.pth")

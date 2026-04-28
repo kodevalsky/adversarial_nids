@@ -68,34 +68,42 @@ def plot_feature_sensitivity(autoencoder, sample_batch, feature_cols, criterion_
     print(f"-> Saved '{filename}'")
     plt.close()
 
-def plot_unified_comparison(ae_base, anogan_base, fano_base, ae_adv, anogan_adv, fano_adv, dataset_name):
-    """Plots baseline vs adversarial scores for all THREE architectures."""
+def plot_unified_comparison(ae_base, anogan_base, fano_base, ae_fgsm, anogan_fgsm, fano_fgsm, ae_pgd, anogan_pgd, fano_pgd, dataset_name):
+    """Plots baseline vs FGSM vs PGD adversarial scores for all THREE architectures."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
     models = ['Deep Autoencoder', 'Standard AnoGAN', 'Fast-AnoGAN']
     baseline_scores = [ae_base, anogan_base, fano_base]
-    adv_scores = [ae_adv, anogan_adv, fano_adv]
+    fgsm_scores = [ae_fgsm, anogan_fgsm, fano_fgsm]
+    pgd_scores = [ae_pgd, anogan_pgd, fano_pgd]
 
     x = np.arange(len(models))
-    width = 0.35
+    width = 0.25  # Made the bars slightly thinner so all 3 fit nicely
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    rects1 = ax.bar(x - width/2, baseline_scores, width, label='Original Malware', color='#ff4c4c', edgecolor='black')
-    rects2 = ax.bar(x + width/2, adv_scores, width, label='Adversarial Malware', color='#3182bd', edgecolor='black')
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Render three bars per model
+    rects1 = ax.bar(x - width, baseline_scores, width, label='Original Malware', color='#ff4c4c', edgecolor='black')
+    rects2 = ax.bar(x, fgsm_scores, width, label='FGSM Attack', color='#3182bd', edgecolor='black')
+    rects3 = ax.bar(x + width, pgd_scores, width, label='PGD Attack', color='#2ca02c', edgecolor='black')
 
     ax.set_ylabel('Anomaly Score (Loss)', fontsize=14, labelpad=10)
-    ax.set_title(f'Evasion Success ({dataset_name}): Model Robustness Comparison', fontsize=16, fontweight='bold', pad=15)
+    ax.set_title(f'Attack Comparison ({dataset_name}): Baseline vs FGSM vs PGD', fontsize=16, fontweight='bold', pad=15)
     ax.set_xticks(x)
     ax.set_xticklabels(models, fontsize=14)
     ax.legend(fontsize=12)
     ax.grid(axis='y', linestyle='--', alpha=0.7)
 
-    for rects in [rects1, rects2]:
+    # Add data labels on top of the bars
+    for rects in [rects1, rects2, rects3]:
         for rect in rects:
             height = rect.get_height()
             ax.annotate(f'{height:.4f}', xy=(rect.get_x() + rect.get_width() / 2, height),
-                        xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontweight='bold', fontsize=10)
+                        xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontweight='bold', fontsize=9)
 
     fig.tight_layout()
-    filename = f'unified_evasion_comparison_{dataset_name.lower()}.pdf'
+    filename = f'unified_attack_comparison_{dataset_name.lower()}.pdf'
     plt.savefig(filename, format='pdf', bbox_inches='tight')
     print(f"-> Saved '{filename}'")
     plt.close()

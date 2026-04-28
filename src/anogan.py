@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import torch.optim as optim
+from utils import set_deterministic_seed
 
 class StaticAnoGAN(nn.Module):
     """Wrapper to lock the optimized latent vector for the FGSM attack."""

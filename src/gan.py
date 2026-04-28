@@ -3,6 +3,8 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 import torch_directml
 from preprocess_data import DatasetPreprocessor
+from utils import set_deterministic_seed
+import os
 
 device = torch_directml.device()
 
@@ -72,18 +74,25 @@ def train_gan_pair(gen, disc, loader, ds_name, epochs=50, latent_dim=64):
     torch.save(disc.state_dict(), f"discriminator_final_{ds_name.lower()}.pth")
 
 if __name__ == '__main__':
+    SEEDS = [42, 123, 2026]
     configs = [
         {"name": "UNSW", "path": "./src/datasets/unsw"},
         {"name": "CIC", "path": "./src/datasets/cic"}
     ]
 
-    for conf in configs:
-        print(f"\n--- Training GAN on {conf['name']} ---")
-        prep = DatasetPreprocessor(conf['path'], conf['name'])
-        train_t, _, _, _ = prep.get_tensors()
+    for seed in SEEDS:
+        set_deterministic_seed(seed)
+        print(f"\n{'='*40}\n STARTING GAN TRAINING | SEED: {seed}\n{'='*40}")
         
-        loader = DataLoader(TensorDataset(train_t), batch_size=4096, shuffle=True)
-        gen = Generator(64, train_t.shape[1]).to(device)
-        disc = Discriminator(train_t.shape[1]).to(device)
-        
-        train_gan_pair(gen, disc, loader, conf['name'])
+        for conf in configs:
+            prep = DatasetPreprocessor(conf['path'], conf['name'])
+            train_t, _, _, _ = prep.get_tensors()
+            
+            loader = DataLoader(TensorDataset(train_t), batch_size=4096, shuffle=True)
+            gen = Generator(64, train_t.shape[1]).to(device)
+            disc = Discriminator(train_t.shape[1]).to(device)
+            
+            train_gan_pair(gen, disc, loader, conf['name'])
+            
+            os.rename(f"generator_final_{conf['name'].lower()}.pth", f"./models/generator_final_{conf['name'].lower()}_seed{seed}.pth")
+            os.rename(f"discriminator_final_{conf['name'].lower()}.pth", f"./models/discriminator_final_{conf['name'].lower()}_seed{seed}.pth")

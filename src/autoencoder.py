@@ -3,6 +3,7 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 import torch_directml
 from preprocess_data import DatasetPreprocessor
+from utils import set_deterministic_seed
 
 device = torch_directml.device()
 
@@ -52,6 +53,7 @@ def train_autoencoder(model, train_loader, test_loader, num_epochs, device, save
             outputs = model(inputs)
             loss = criterion(outputs, inputs)
             loss.backward()
+            # Gradient clipping to prevent exploding
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             total_train_loss += loss.item()
@@ -80,19 +82,23 @@ def train_autoencoder(model, train_loader, test_loader, num_epochs, device, save
                 break
 
 if __name__ == '__main__':
+    SEEDS = [42, 123, 2026]
     datasets = [
-        {"name": "UNSW", "path": "./src/datasets/unsw", "save": "best_autoencoder.pth"},
-        {"name": "CIC", "path": "./src/datasets/cic", "save": "best_autoencoder_cic.pth"}
+        {"name": "UNSW", "path": "./src/datasets/unsw"},
+        {"name": "CIC", "path": "./src/datasets/cic"}
     ]
 
-    for ds in datasets:
-        print(f"\n--- Training Autoencoder on {ds['name']} ---")
-        preprocessor = DatasetPreprocessor(ds['path'], ds['name'])
+    for seed in SEEDS:
+        set_deterministic_seed(seed)
+        print(f"\n{'='*40}\n STARTING AUTOENCODER TRAINING | SEED: {seed}\n{'='*40}")
         
-        train_t, test_t, labels_t, _ = preprocessor.get_tensors(save_as_pt=True)
+        for ds in datasets:
+            save_path = f"./models/best_autoencoder_{ds['name'].lower()}_seed{seed}.pth"
+            preprocessor = DatasetPreprocessor(ds['path'], ds['name'])
+            train_t, test_t, _, _ = preprocessor.get_tensors(save_as_pt=False)
 
-        train_loader = DataLoader(TensorDataset(train_t), batch_size=4096, shuffle=True)
-        test_loader = DataLoader(TensorDataset(test_t), batch_size=4096, shuffle=False)
+            train_loader = DataLoader(TensorDataset(train_t), batch_size=4096, shuffle=True)
+            test_loader = DataLoader(TensorDataset(test_t), batch_size=4096, shuffle=False)
 
-        model = Autoencoder(train_t.shape[1]).to(device)
-        train_autoencoder(model, train_loader, test_loader, 150, device, ds['save'])
+            model = Autoencoder(train_t.shape[1]).to(device)
+            train_autoencoder(model, train_loader, test_loader, 150, device, save_path)
